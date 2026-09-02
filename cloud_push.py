@@ -8,6 +8,8 @@ import json, os, sys, re, datetime, urllib.request, urllib.parse
 BASE = os.path.dirname(os.path.abspath(__file__))
 PAGES = 'https://1930258243.github.io/moligod-reports/reports/'
 TYPE_MAP = {'daily': '日报', 'weekly': '周报', 'monthly': '月报'}
+# 用户持仓子弹（与今日行情表名称一致），推送里单列
+HOLDINGS = ['12.7x55mm PS12A', '.45 ACP FMJ', '5.8x42mm DVP88', '.357 Magnum FMJ']
 
 def push(key, title, desp):
     url = 'https://sctapi.ftqq.com/%s.send' % key
@@ -15,6 +17,21 @@ def push(key, title, desp):
     req = urllib.request.Request(url, data=data)
     resp = json.loads(urllib.request.urlopen(req, timeout=30).read().decode('utf-8'))
     return resp
+
+def extract_holdings(html):
+    """从今日行情表提取用户持仓子弹的今日价格与涨跌幅"""
+    m = re.search(r'<h2>今日行情表.*?</table>', html, re.S)
+    if not m:
+        return []
+    out = []
+    for row in re.findall(r'<tr>(.*?)</tr>', m.group(0), re.S):
+        cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.S)
+        if len(cells) < 7:
+            continue
+        name = re.sub(r'<[^>]+>', '', cells[0]).strip()
+        if name in HOLDINGS:
+            out.append((name, cells[2].strip(), cells[6].strip()))
+    return out
 
 def extract_overview(html):
     """从报告 HTML 提取市场概览 tags 和可入手 TOP"""
@@ -52,13 +69,22 @@ def main():
         for t in tags:
             lines.append('- ' + t)
     lines.append('')
+    # 持仓子弹今日行情（链接打不开也能直接看）
+    hld = extract_holdings(html)
+    if hld:
+        lines.append('📈 你的持仓今日：')
+        for n, cur, chg in hld:
+            lines.append('- %s：最新 %s（%s）' % (n, cur, chg))
+        lines.append('')
     if top:
         lines.append('当前可入手 TOP%d（3级弹，现价→日常卖税后空间）：' % min(len(top), 5))
         for i, (n, cur, sp) in enumerate(top, 1):
             lines.append('%d. %s：现价%s，空间%s' % (i, n, cur, sp))
     lines.append('')
-    lines.append('📄 完整报告 HTML：%s%s.html' % (PAGES, fname))
-    lines.append('📄 PDF 版：%s%s.pdf' % (PAGES, fname))
+    # URL 用 quote 编码中文文件名，避免微信无法识别链接
+    enc = lambda s: urllib.parse.quote(s, safe='/:')
+    lines.append('📄 [打开完整报告 HTML](%s%s)' % (PAGES, enc(fname + '.html')))
+    lines.append('📄 [打开 PDF 版](%s%s)' % (PAGES, enc(fname + '.pdf')))
     desp = '\n'.join(lines)
     title = 'moligod %s %s' % (label, date)
     resp = push(key, title, desp)
