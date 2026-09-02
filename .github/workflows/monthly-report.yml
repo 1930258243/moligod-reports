@@ -1,0 +1,26 @@
+name: 行情月报
+on:
+  schedule:
+    - cron: '30 14 1 * *'   # 每月 1 号 22:30 (UTC+8)
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 抓取行情数据
+        run: python cloud_fetch.py
+      - name: 生成月报
+        run: python cloud_report.py monthly "reports/月报_$(date +%F).html"
+      - name: 回传报告
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data reports
+          git commit -m "monthly report $(date +%F)" || echo "no change"
+          git push
