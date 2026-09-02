@@ -1,7 +1,7 @@
-name: 行情月报
+name: moligod 月报
 on:
   schedule:
-    - cron: '30 14 1 * *'   # 每月 1 号 22:30 (UTC+8)
+    - cron: '30 14 1 * *'
   workflow_dispatch:
 permissions:
   contents: write
@@ -12,15 +12,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: 抓取行情数据
+          python-version: '3.12'
+      - name: 抓取全部 68 款子弹数据
         run: python cloud_fetch.py
-      - name: 生成月报
-        run: python cloud_report.py monthly "reports/月报_$(date +%F).html"
-      - name: 回传报告
+      - name: 生成全子弹月报
+        run: python cloud_report_all.py monthly "reports/月报_$(date +%F).html"
+      - name: 安装 Chrome（PDF 转换）
+        uses: browser-actions/setup-chrome@v1
+      - name: 转 PDF
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data reports
-          git commit -m "monthly report $(date +%F)" || echo "no change"
+          chrome --headless --disable-gpu --no-sandbox --print-to-pdf="reports/月报_$(date +%F).pdf" "reports/月报_$(date +%F).html"
+      - name: 提交报告到仓库
+        run: |
+          git config user.name "moligod-bot"
+          git config user.email "moligod-bot@users.noreply.github.com"
+          git add reports data
+          git commit -m "monthly report $(date +%F)" || echo "no changes"
           git push
+      - name: 微信推送（摘要+HTML/PDF 链接）
+        env:
+          SCT_KEY: ${{ secrets.SCT_KEY }}
+        run: python cloud_push.py monthly $(date +%F)
