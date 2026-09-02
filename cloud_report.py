@@ -104,8 +104,8 @@ def build_daily_rows(history, catalog):
 
 def render_daily(rows, today):
     with_chg = [r for r in rows if r['chg'] is not None]
-    g3 = [r for r in with_chg if r['grade'] == 3]
-    g4 = [r for r in with_chg if r['grade'] == 4]
+    g3 = [r for r in with_chg if str(r['grade']) == '3']
+    g4 = [r for r in with_chg if str(r['grade']) == '4']
     idx3 = sum(r['chg'] for r in g3) / len(g3) if g3 else None
     idx4 = sum(r['chg'] for r in g4) / len(g4) if g4 else None
 
@@ -144,7 +144,7 @@ def render_daily(rows, today):
     pos_n = sum(1 for r in valid if (r['margin'] or 0) > 0)
 
     # 当前可入手清单（3级弹，现价 vs 日常期均价×0.87）
-    cur_rows = [r for r in rows if r['grade'] == 3 and r['cur_space'] is not None]
+    cur_rows = [r for r in rows if str(r['grade']) == '3' and r['cur_space'] is not None]
     cur_rows.sort(key=lambda r: -(r['cur_margin'] or -999))
     cur_tbody = []
     for r in cur_rows:
@@ -191,8 +191,8 @@ def render_daily(rows, today):
 
 def render_market_overview(rows, rtype, today):
     with_chg = [r for r in rows if r['chg'] is not None]
-    g3 = [r for r in with_chg if r['grade'] == 3]
-    g4 = [r for r in with_chg if r['grade'] == 4]
+    g3 = [r for r in with_chg if str(r['grade']) == '3']
+    g4 = [r for r in with_chg if str(r['grade']) == '4']
     idx3 = sum(r['chg'] for r in g3) / len(g3) if g3 else None
     idx4 = sum(r['chg'] for r in g4) / len(g4) if g4 else None
     low_tag = '低价期最后一天' if today >= LOW_END else ('低价期进行中' if today >= LOW_START else '日常期')
