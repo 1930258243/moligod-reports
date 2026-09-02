@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""cloud_push.py — 微信推送报告摘要+HTML/PDF链接（Server酱）
+"""cloud_push.py — 微信推送报告厚内容（Server酱）
 用法: SCT_KEY=xxx python cloud_push.py [daily|weekly|monthly] [date]
-从 reports/{日报|周报|月报}_{date}.html 提取摘要，推送标题+摘要+在线链接。
+把市场概览/持仓/涨跌榜/可入手/消息面全部塞进推送，链接仅作补充。
 """
 import json, os, sys, re, datetime, urllib.request, urllib.parse
 
@@ -11,12 +11,22 @@ TYPE_MAP = {'daily': '日报', 'weekly': '周报', 'monthly': '月报'}
 # 用户持仓子弹（与今日行情表名称一致），推送里单列
 HOLDINGS = ['12.7x55mm PS12A', '.45 ACP FMJ', '5.8x42mm DVP88', '.357 Magnum FMJ']
 
+
 def push(key, title, desp):
     url = 'https://sctapi.ftqq.com/%s.send' % key
     data = urllib.parse.urlencode({'title': title, 'desp': desp}).encode('utf-8')
     req = urllib.request.Request(url, data=data)
     resp = json.loads(urllib.request.urlopen(req, timeout=30).read().decode('utf-8'))
     return resp
+
+
+def extract_overview(html):
+    m = re.search(r'<b>📊 市场概览</b><br>(.*?)</div>', html, re.S)
+    tags = []
+    if m:
+        tags = re.findall(r'<span class="tag">(.*?)</span>', m.group(1))
+    return tags
+
 
 def extract_holdings(html):
     """从今日行情表提取用户持仓子弹的今日价格与涨跌幅"""
@@ -33,21 +43,58 @@ def extract_holdings(html):
             out.append((name, cells[2].strip(), cells[6].strip()))
     return out
 
-def extract_overview(html):
-    """从报告 HTML 提取市场概览 tags 和可入手 TOP"""
-    m = re.search(r'<b>📊 市场概览</b><br>(.*?)</div>', html, re.S)
-    tags = []
-    if m:
-        tags = re.findall(r'<span class="tag">(.*?)</span>', m.group(1))
-    # 可入手清单 TOP5（3级弹）
-    top = []
-    m2 = re.search(r'<h2>当前可入手清单.*?</table>', html, re.S)
-    if m2:
-        seg = m2.group(0)
-        for row in re.findall(r'<tr><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td><td[^>]*>(.*?)</td></tr>', seg)[:5]:
-            name, cur, dayavg, taxnet, space = row
-            top.append((name, cur, space))
-    return tags, top
+
+def extract_rank(html, h2_keyword, limit=3):
+    """提取涨幅/跌幅榜表格：行 = [名字, 等级, 涨跌幅, 最新价]"""
+    m = re.search(r'<h2>%s.*?</table>' % re.escape(h2_keyword), html, re.S)
+    if not m:
+        return []
+    out = []
+    for row in re.findall(r'<tr>(.*?)</tr>', m.group(0), re.S):
+        cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.S)
+        if len(cells) < 4:
+            continue
+        vals = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+        if vals[0] and vals[0] != '子弹':
+            out.append(tuple(vals))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def extract_top_buy(html, limit=3):
+    """提取当前可入手清单（3级弹）：名字/现价/税后空间"""
+    m = re.search(r'<h2>当前可入手清单.*?</table>', html, re.S)
+    if not m:
+        return []
+    seg = m.group(0)
+    rows = re.findall(r'<tr><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td><td>(.*?)</td><td[^>]*>(.*?)</td></tr>', seg)
+    out = []
+    for name, cur, dayavg, taxnet, space in rows[:limit]:
+        out.append((re.sub(r'<[^>]+>', '', name).strip(),
+                    re.sub(r'<[^>]+>', '', cur).strip(),
+                    re.sub(r'<[^>]+>', '', space).strip()))
+    return out
+
+
+def extract_news(html, limit=3):
+    """提取消息面要点（纯文本，前 limit 条）"""
+    m = re.search(r'<h2>消息面与价格走势预测.*?</h2>(.*?)(?:<h2>|$)', html, re.S)
+    if not m:
+        return []
+    txt = re.sub(r'<[^>]+>', '', m.group(1))
+    txt = re.sub(r'\s+', ' ', txt).strip()
+    # 按编号切分
+    items = re.split(r'\d+\.', txt)
+    out = []
+    for it in items:
+        it = it.strip()
+        if it and len(it) > 3:
+            out.append(it)
+        if len(out) >= limit:
+            break
+    return out
+
 
 def main():
     rtype = sys.argv[1] if len(sys.argv) > 1 else 'daily'
@@ -61,30 +108,55 @@ def main():
     if not os.path.exists(html_path):
         print('NO_REPORT', html_path); sys.exit(1)
     html = open(html_path, encoding='utf-8').read()
-    tags, top = extract_overview(html)
-    lines = ['**%s · %s**' % (label, date)]
-    lines.append('')
+
+    lines = ['**moligod %s · %s**' % (label, date), '']
+
+    tags = extract_overview(html)
     if tags:
-        lines.append('市场概览：')
+        lines.append('📊 市场概览：')
         for t in tags:
             lines.append('- ' + t)
-    lines.append('')
-    # 持仓子弹今日行情（链接打不开也能直接看）
+        lines.append('')
+
     hld = extract_holdings(html)
     if hld:
         lines.append('📈 你的持仓今日：')
         for n, cur, chg in hld:
             lines.append('- %s：最新 %s（%s）' % (n, cur, chg))
         lines.append('')
+
+    ups = extract_rank(html, '涨幅榜', 3)
+    if ups:
+        lines.append('🔺 涨幅 TOP3：')
+        for n, g, chg, cur in ups:
+            lines.append('- %s：%s（现价 %s）' % (n, chg, cur))
+        lines.append('')
+
+    downs = extract_rank(html, '跌幅榜', 3)
+    if downs:
+        lines.append('🔻 跌幅 TOP3：')
+        for n, g, chg, cur in downs:
+            lines.append('- %s：%s（现价 %s）' % (n, chg, cur))
+        lines.append('')
+
+    top = extract_top_buy(html)
     if top:
-        lines.append('当前可入手 TOP%d（3级弹，现价→日常卖税后空间）：' % min(len(top), 5))
-        for i, (n, cur, sp) in enumerate(top, 1):
-            lines.append('%d. %s：现价%s，空间%s' % (i, n, cur, sp))
-    lines.append('')
-    # URL 用 quote 编码中文文件名，避免微信无法识别链接
+        lines.append('🎯 当前可入手（3级弹）：')
+        for n, cur, sp in top:
+            lines.append('- %s：现价 %s，空间 %s' % (n, cur, sp))
+        lines.append('')
+
+    news = extract_news(html)
+    if news:
+        lines.append('📰 消息面：')
+        for it in news:
+            lines.append('- ' + it[:80])
+        lines.append('')
+
     enc = lambda s: urllib.parse.quote(s, safe='/:')
-    lines.append('📄 [打开完整报告 HTML](%s%s)' % (PAGES, enc(fname + '.html')))
-    lines.append('📄 [打开 PDF 版](%s%s)' % (PAGES, enc(fname + '.pdf')))
+    lines.append('📄 [完整报告 HTML](%s%s)' % (PAGES, enc(fname + '.html')))
+    lines.append('📄 [PDF 版](%s%s)' % (PAGES, enc(fname + '.pdf')))
+
     desp = '\n'.join(lines)
     title = 'moligod %s %s' % (label, date)
     resp = push(key, title, desp)
@@ -94,6 +166,7 @@ def main():
     else:
         print('PUSH_FAIL', resp)
         sys.exit(1)
+
 
 if __name__ == '__main__':
     main()
