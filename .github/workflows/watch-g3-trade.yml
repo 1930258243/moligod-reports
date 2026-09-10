@@ -1,0 +1,27 @@
+name: watch-g3-trade
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run g3 trade watch
+        run: python watch_g3_trade.py
+        env:
+          SCT_KEY: ${{ secrets.SCT_KEY }}
+      - name: Commit state
+        run: |
+          git config user.name "moligod-bot"
+          git config user.email "moligod-bot@users.noreply.github.com"
+          if [ -f g3trade_state.json ]; then
+            git add g3trade_state.json
+            git diff --cached --quiet || (git commit -m "g3trade state update" && git push)
+          fi
