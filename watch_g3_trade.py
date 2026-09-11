@@ -2,7 +2,12 @@
 """watch_g3_trade.py — 三级弹买卖策略监控（依据"十七"交易表）
 现价 ≤ 买入价 → 微信推"买入提醒"；现价 ≥ 卖出价 → 推"卖出提醒"。
 状态变化才推送（buy/mid/sell 切换），避免刷屏。云端与本地均可用。
-用法: SCT_KEY=xxx python watch_g3_trade.py
+
+推送渠道（按优先级）：
+  1) PUSH_PLUS_TOKEN 环境变量 → PushPlus 微信推送（免费 200 条/天）
+  2) SCT_KEY 环境变量或本地 sct_sendkey.txt → Server酱（免费 5 条/天）
+
+用法: PUSH_PLUS_TOKEN=xxx python watch_g3_trade.py
 """
 import json, os, urllib.request, urllib.parse, gzip, time
 
@@ -24,31 +29,65 @@ WATCH = {
     '1357': ('5.8x42mm DVP88', 418, 538, 482),
 }
 
+UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36')
+HDR = {
+    'User-Agent': UA,
+    'Referer': 'https://moligod.com/',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+}
+
+
+def http_get(url, opener, tries=3):
+    last = None
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url, headers=HDR)
+            data = opener.open(req, timeout=25).read()
+            if data[:2] == b'\x1f\x8b':
+                data = gzip.decompress(data)
+            return data
+        except Exception as e:
+            last = e
+            time.sleep(2 + 3 * i)
+    raise last
+
 
 def fetch_catalog():
     cj = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
-    cj.open('https://moligod.com/', timeout=20)
-    req = urllib.request.Request('https://moligod.com/api/market/ammo-catalog',
-                                 headers={'Accept-Encoding': 'gzip', 'User-Agent': 'Mozilla/5.0'})
-    data = cj.open(req, timeout=20).read()
-    if data[:2] == b'\x1f\x8b':
-        data = gzip.decompress(data)
+    # 1) 建会话 cookie（首页）
+    try:
+        http_get('https://moligod.com/', cj)
+    except Exception:
+        pass  # 首页失败不致命，继续试 API
+    # 2) 抓 catalog
+    data = http_get('https://moligod.com/api/market/ammo-catalog', cj)
     cat = json.loads(data)
     items = cat['items'] if isinstance(cat, dict) and 'items' in cat else cat
     return {str(it.get('id')): it.get('latest_price') for it in items}
 
 
-def get_key():
-    k = os.environ.get('SCT_KEY', '')
-    if k:
-        return k
-    kf = os.path.join(BASE, 'sct_sendkey.txt')
-    if os.path.exists(kf):
-        return open(kf, encoding='utf-8').read().strip()
-    return ''
+def get_tokens():
+    """返回 (pushplus_token, sct_key)"""
+    pp = os.environ.get('PUSH_PLUS_TOKEN', '')
+    sct = os.environ.get('SCT_KEY', '')
+    if not sct:
+        kf = os.path.join(BASE, 'sct_sendkey.txt')
+        if os.path.exists(kf):
+            sct = open(kf, encoding='utf-8').read().strip()
+    return pp, sct
 
 
-def push(key, title, desp):
+def push_pushplus(token, title, content):
+    url = 'https://www.pushplus.plus/send?' + urllib.parse.urlencode(
+        {'token': token, 'title': title, 'content': content, 'template': 'txt'})
+    with urllib.request.urlopen(url, timeout=15) as r:
+        return r.read().decode('utf-8', 'ignore')[:200]
+
+
+def push_sct(key, title, desp):
     url = 'https://sctapi.ftqq.com/%s.send?' % key + urllib.parse.urlencode(
         {'title': title, 'desp': desp})
     with urllib.request.urlopen(url, timeout=15) as r:
@@ -82,8 +121,8 @@ def main():
             buys.append((name, p, buy, bep))
         elif zone == 'sell' and old != 'sell':
             sells.append((name, p, sell, bep))
-    key = get_key()
-    if (buys or sells) and key:
+    pp, sct = get_tokens()
+    if (buys or sells) and (pp or sct):
         if buys:
             title = '🟢 三级弹买入提醒 %d 项' % len(buys)
             lines = ['监测时间 %s' % now, '']
@@ -93,7 +132,11 @@ def main():
                 if bep:
                     lines.append('  保本价 %s' % bep)
             lines.append('—— 三级弹买卖监控')
-            print('PUSH_BUY:', push(key, title, '\n'.join(lines)))
+            content = '\n'.join(lines)
+            if pp:
+                print('PP_BUY:', push_pushplus(pp, title, content))
+            elif sct:
+                print('SCT_BUY:', push_sct(sct, title, content))
         if sells:
             title = '🔴 三级弹卖出提醒 %d 项' % len(sells)
             lines = ['监测时间 %s' % now, '']
@@ -103,7 +146,11 @@ def main():
                 if bep:
                     lines.append('  保本价 %s' % bep)
             lines.append('—— 三级弹买卖监控')
-            print('PUSH_SELL:', push(key, title, '\n'.join(lines)))
+            content = '\n'.join(lines)
+            if pp:
+                print('PP_SELL:', push_pushplus(pp, title, content))
+            elif sct:
+                print('SCT_SELL:', push_sct(sct, title, content))
     json.dump(cur, open(STATEF, 'w', encoding='utf-8'), ensure_ascii=False)
     print('done: buy=%d sell=%d' % (len(buys), len(sells)))
 
