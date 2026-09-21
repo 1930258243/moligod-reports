@@ -85,6 +85,40 @@ def load_daily():
 
 def save_daily(count, today):
     json.dump({'date': today, 'count': count}, open(DAILYF, 'w', encoding='utf-8'))
+    # 云端：用 GITHUB_TOKEN 通过 API 写回仓库，保证跨 run 计数持久化
+    token = os.environ.get('GITHUB_TOKEN', '')
+    if token:
+        _sync_cloud(DAILYF, {'date': today, 'count': count}, token)
+
+
+def _sync_cloud(path, obj, token):
+    import ssl
+    ctx = ssl._create_unverified_context()
+    base = 'https://api.github.com/repos/1930258243/moligod-reports/contents/' + path
+    req = urllib.request.Request(base)
+    req.add_header('Authorization', 'token %s' % token)
+    req.add_header('Accept', 'application/vnd.github+json')
+    sha = None
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=20) as r:
+            sha = json.loads(r.read().decode('utf-8')).get('sha')
+    except Exception:
+        pass  # 文件不存在则直接创建
+    payload = {'message': 'daily push count sync', 'content': __import__('base64').b64encode(
+        json.dumps(obj, ensure_ascii=False).encode('utf-8')).decode()}
+    if sha:
+        payload['sha'] = sha
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(base, data=data, method='PUT')
+    req.add_header('Authorization', 'token %s' % token)
+    req.add_header('Accept', 'application/vnd.github+json')
+    req.add_header('Content-Type', 'application/json')
+    try:
+        with urllib.request.urlopen(req, context=ctx, timeout=20) as r:
+            return r.status
+    except Exception as e:
+        print('cloud sync fail:', repr(e)[:120])
+        return None
 
 
 def push(key, title, desp):
