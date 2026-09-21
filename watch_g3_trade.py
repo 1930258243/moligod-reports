@@ -1,18 +1,17 @@
 # -*- coding: utf-8 -*-
-"""watch_g3_trade.py — 三级弹买卖策略监控（依据"十七"交易表）
+"""watch_g3_trade.py — 三级弹买卖策略监控（依据"十七"交易表 + 用户持仓）
 现价 ≤ 买入价 → 微信推"买入提醒"；现价 ≥ 卖出价 → 推"卖出提醒"。
 状态变化才推送（buy/mid/sell 切换），避免刷屏。云端与本地均可用。
 
-推送渠道（按优先级）：
-  1) PUSH_PLUS_TOKEN 环境变量 → PushPlus 微信推送（免费 200 条/天）
-  2) SCT_KEY 环境变量或本地 sct_sendkey.txt → Server酱（免费 5 条/天）
-
-用法: PUSH_PLUS_TOKEN=xxx python watch_g3_trade.py
+推送渠道：Server酱（SCT_KEY 环境变量或本地 sct_sendkey.txt）
+每日推送上限：DAILY_LIMIT 条（默认 5，Server酱免费版上限），达到后当天静默。
 """
 import json, os, urllib.request, urllib.parse, gzip, time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATEF = os.path.join(BASE, 'g3trade_state.json')
+DAILYF = os.path.join(BASE, 'daily_push_count.json')
+DAILY_LIMIT = int(os.environ.get('DAILY_LIMIT', 5))
 
 # id -> (名称, 买入价或None, 卖出价, 保本价或None)
 # 2026-09-19 用户指定：只监控这三款持仓弹
@@ -62,25 +61,33 @@ def fetch_catalog():
     return {str(it.get('id')): it.get('latest_price') for it in items}
 
 
-def get_tokens():
-    """返回 (pushplus_token, sct_key)"""
-    pp = os.environ.get('PUSH_PLUS_TOKEN', '')
-    sct = os.environ.get('SCT_KEY', '')
-    if not sct:
-        kf = os.path.join(BASE, 'sct_sendkey.txt')
-        if os.path.exists(kf):
-            sct = open(kf, encoding='utf-8').read().strip()
-    return pp, sct
+def get_key():
+    k = os.environ.get('SCT_KEY', '')
+    if k:
+        return k
+    kf = os.path.join(BASE, 'sct_sendkey.txt')
+    if os.path.exists(kf):
+        return open(kf, encoding='utf-8').read().strip()
+    return ''
 
 
-def push_pushplus(token, title, content):
-    url = 'https://www.pushplus.plus/send?' + urllib.parse.urlencode(
-        {'token': token, 'title': title, 'content': content, 'template': 'txt'})
-    with urllib.request.urlopen(url, timeout=15) as r:
-        return r.read().decode('utf-8', 'ignore')[:200]
+def load_daily():
+    """返回 (今日已发条数, 今日日期)"""
+    today = time.strftime('%Y-%m-%d')
+    try:
+        d = json.load(open(DAILYF, encoding='utf-8'))
+        if d.get('date') == today:
+            return int(d.get('count', 0)), today
+    except Exception:
+        pass
+    return 0, today
 
 
-def push_sct(key, title, desp):
+def save_daily(count, today):
+    json.dump({'date': today, 'count': count}, open(DAILYF, 'w', encoding='utf-8'))
+
+
+def push(key, title, desp):
     url = 'https://sctapi.ftqq.com/%s.send?' % key + urllib.parse.urlencode(
         {'title': title, 'desp': desp})
     with urllib.request.urlopen(url, timeout=15) as r:
@@ -114,8 +121,10 @@ def main():
             buys.append((name, p, buy, bep))
         elif zone == 'sell' and old != 'sell':
             sells.append((name, p, sell, bep))
-    pp, sct = get_tokens()
-    if (buys or sells) and (pp or sct):
+    key = get_key()
+    used, today = load_daily()
+    if (buys or sells) and key and used < DAILY_LIMIT:
+        pushed = 0
         if buys:
             title = '🟢 三级弹买入提醒 %d 项' % len(buys)
             lines = ['监测时间 %s' % now, '']
@@ -125,12 +134,9 @@ def main():
                 if bep:
                     lines.append('  保本价 %s' % bep)
             lines.append('—— 三级弹买卖监控')
-            content = '\n'.join(lines)
-            if pp:
-                print('PP_BUY:', push_pushplus(pp, title, content))
-            elif sct:
-                print('SCT_BUY:', push_sct(sct, title, content))
-        if sells:
+            print('PUSH_BUY:', push(key, title, '\n'.join(lines)))
+            pushed += 1
+        if sells and used + pushed < DAILY_LIMIT:
             title = '🔴 三级弹卖出提醒 %d 项' % len(sells)
             lines = ['监测时间 %s' % now, '']
             for name, p, sell, bep in sells:
@@ -139,11 +145,11 @@ def main():
                 if bep:
                     lines.append('  保本价 %s' % bep)
             lines.append('—— 三级弹买卖监控')
-            content = '\n'.join(lines)
-            if pp:
-                print('PP_SELL:', push_pushplus(pp, title, content))
-            elif sct:
-                print('SCT_SELL:', push_sct(sct, title, content))
+            print('PUSH_SELL:', push(key, title, '\n'.join(lines)))
+            pushed += 1
+        save_daily(used + pushed, today)
+    elif (buys or sells):
+        print('DAILY_LIMIT 已达上限(%d)，今日不再推送' % DAILY_LIMIT)
     json.dump(cur, open(STATEF, 'w', encoding='utf-8'), ensure_ascii=False)
     print('done: buy=%d sell=%d' % (len(buys), len(sells)))
 
